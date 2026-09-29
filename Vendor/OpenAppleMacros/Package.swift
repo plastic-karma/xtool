@@ -71,6 +71,15 @@ let package = Package(
                 "OpenAppleMacrosBase",
                 .product(name: "_SwiftCompilerPluginMessageHandling", package: "swift-syntax"),
             ] + macroDependencies
+        ),
+        .testTarget(
+            name: "SwiftDataMacrosTests",
+            dependencies: [
+                "OpenAppleMacrosBase",
+                "SwiftDataMacros",
+                .product(name: "SwiftSyntaxMacroExpansion", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxBuilder", package: "swift-syntax"),
+            ]
         )
     ] + macroTargets
 )

@@ -110,7 +110,7 @@ struct SDKBuilder {
     static let platforms = ["iPhoneOS", "MacOSX", "iPhoneSimulator", "WatchOS", "WatchSimulator"]
 
     // bump this when the sdk builder logic changes
-    static let sdkEpoch = 4
+    static let sdkEpoch = 5
 
     // tag from https://github.com/xtool-org/darwin-tools-linux-llvm
     static let darwinToolsVersion = "1.1.0"

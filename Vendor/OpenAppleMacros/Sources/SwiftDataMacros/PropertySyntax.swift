@@ -75,3 +75,41 @@ func swiftDataStoredProperty(
     }
     return variable
 }
+
+/// Generated storage is already absent from the source model's schema. Avoid
+/// recursively attaching persistence accessors without invoking @Transient on
+/// generated peers, whose enclosing-type context the compiler can omit.
+func swiftDataIsInternalStorage(_ declaration: some DeclSyntaxProtocol) -> Bool {
+    guard let variable = declaration.as(VariableDeclSyntax.self),
+          variable.bindings.count == 1, let binding = variable.bindings.first,
+          binding.accessorBlock == nil,
+          let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
+          variable.modifiers.count == 1,
+          variable.modifiers.first?.name.tokenKind == .keyword(.private),
+          variable.modifiers.first?.detail == nil,
+          variable.attributes.isEmpty else {
+        return false
+    }
+    let initializer = binding.initializer?.value
+    let type = binding.typeAnnotation?.type.trimmedDescription
+    if name == "_$observationRegistrar" {
+        return variable.bindingSpecifier.tokenKind == .keyword(.let)
+            && type == nil && initializer?.trimmedDescription == "Observation.ObservationRegistrar()"
+    }
+    guard variable.bindingSpecifier.tokenKind == .keyword(.var) else { return false }
+    if name == "_$backingData" {
+        guard let call = initializer?.as(FunctionCallExprSyntax.self),
+              call.arguments.isEmpty, call.trailingClosure == nil, call.additionalTrailingClosures.isEmpty,
+              let callee = call.calledExpression.as(MemberAccessExprSyntax.self),
+              callee.declName.baseName.text == "createBackingData", callee.declName.argumentNames == nil,
+              let model = callee.base?.as(DeclReferenceExprSyntax.self),
+              model.argumentNames == nil else {
+            return false
+        }
+        return type == "any SwiftData.BackingData<\(model.trimmedDescription)>"
+    }
+    return name.hasPrefix("_") && name.count > 1 && !name.hasPrefix("_$")
+        && (type == "_SwiftDataNoType" || type == "_SwiftDataNoType?")
+        && (initializer == nil || initializer?.trimmedDescription == ".init()")
+}
+

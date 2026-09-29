@@ -31,6 +31,8 @@ xtool sdk install /path/to/Xcode.xip \
 
 For an existing normal SDK, use `xtool sdk update` with the same two options instead. Release assembly and compilation use the same SDK selected by xtool's SwiftPM configuration directory (`XDG_CONFIG_HOME/swiftpm`, or `~/.swiftpm`). Choose an application compiler compatible with the imported SDK; the manifest's `swiftVersion` selects an installed Swiftly toolchain without changing the global Swift selection. `--toolchain` accepts an explicit toolchain directory.
 
+Normal builds automatically upgrade an obsolete normal SDK and retain its saved custom toolset and macro-server selections. SDK epoch 5 invalidates installations predating native Foundation/SwiftData plugin routing. Replacing an installed custom macro-server executable does not replace the copy inside an otherwise current SDK: run `xtool sdk update` after rebuilding that server, without repeating the tooling options.
+
 ## Keep only application configuration in the application repository
 
 Create `xtool-release.yml` beside the canonical project:
@@ -110,6 +112,10 @@ Native asset compilation preserves supported colors, images and app-icon appeara
 
 Applications using `@Query` with synthesized memberwise view initializers need Swift 6.4 or newer. Its [SE-0502 initialization rules](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0502-exclude-private-from-memberwise-init.md) exclude initialized private macro storage; older Linux compilers otherwise make the view initializer private. Select that compiler in the application's `swiftVersion` rather than exposing backing storage or rewriting views.
 
+SwiftData property markers require a property directly inside an `@Model` class; a nested non-model class does not inherit that permission. Generated private backing-data, observation-registrar and initialization-marker storage does not invoke `@Transient`, so the compiler's missing lexical context for generated peers needs no validation exception. User-written storage lookalikes still receive the same strict marker validation. Inheritance, generic models and `#Index` remain explicit errors rather than silently losing schema semantics.
+
+A compiler smoke using the installed SDK verified model initialization, relationships, external-storage attributes, uniqueness, Foundation predicates, real `Query` storage, `@Bindable` editing and cross-file synthesized view initializers for iOS `arm64` and both watchOS device architectures. Emitted SwiftData/Observation calls and rejection of transient properties outside a directly enclosing model were checked. These are compiler/binding-path checks, not execution of Apple's persistence or SwiftUI runtime.
+
 Release verification checks the complete expected bundle and architecture inventory, Mach-O platform/deployment/SDK records, host-only load paths, code-page and signed-resource hashes, requested entitlements, signing certificates, CMS signatures, and strict universal-binary extents. Watch device bundles contain `arm64_32` and `arm64` slices, with the watchOS 26 deployment floor applied only to `arm64`. Allocation slack after a signature SuperBlob is distinct from forbidden bytes after the final universal slice; [Apple's parser](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_utilities/lib/superblob.h) bounds indexed signature data by the blob's own length.
 
 Both SwiftPM build backends retain archived extension code whose entry points are resolved by the system, and pass the selected SDK version to the Linux linker explicitly. The native signer supports executables without a `__text` section and refuses to insert a signature load command unless the entire command fits before the first file-backed section.
@@ -128,6 +134,7 @@ The builds still emit Swift Build's language-mode override warning. VaultLink's 
 
 ```bash
 swift test
+swift test --package-path Vendor/OpenAppleMacros
 swift test --package-path Tools/NativeResources
 PYTHONPATH=Tools/Release python3 -m unittest discover -s Tools/Release/tests
 make lint

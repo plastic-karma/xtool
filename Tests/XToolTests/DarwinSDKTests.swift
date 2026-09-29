@@ -55,6 +55,26 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: installedBundle.path))
 }
 
+@Test func nativeMacroRoutingRequiresSDKUpgrade() throws {
+    let bundle = FileManager.default.temporaryDirectory
+        .appendingPathComponent("SDKUpgrade-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: bundle) }
+    try FileManager.default.createDirectory(
+        at: bundle.appendingPathComponent("Xcode.app"),
+        withIntermediateDirectories: true
+    )
+    let versionFile = bundle.appendingPathComponent("darwin-sdk-version.txt")
+    // Epoch 4 predates native Foundation/SwiftData plugin routing.
+    try Data("epoch=4,darwinTools=1.1.0,oam=1.3.0\n".utf8).write(to: versionFile)
+    let oldSDK = try #require(DarwinSDK(bundle: bundle))
+    #expect(oldSDK.flavor == .normal)
+    #expect(!oldSDK.isUpToDate())
+
+    try Data("\(SDKBuilder.currentSDKVersion)\n".utf8).write(to: versionFile)
+    let updatedSDK = try #require(DarwinSDK(bundle: bundle))
+    #expect(updatedSDK.isUpToDate())
+}
+
 @Test func watchSDKRetainsHeadersRuntimeAndTestingLibraries() {
     for path in [
         "Contents/Developer/Platforms/WatchOS.platform/Info.plist",

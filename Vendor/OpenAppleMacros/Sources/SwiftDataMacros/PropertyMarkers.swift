@@ -31,9 +31,7 @@ struct TransientPropertyMacro: PeerMacro {
         providingPeersOf declaration: some DeclSyntaxProtocol,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        // Swift omits lexical context for declarations introduced by another macro.
-        // Transient marks ordinary stored state; @Model owns schema membership.
-        let variable = try swiftDataStoredProperty(declaration, macro: "Transient")
+        let variable = try swiftDataValidateProperty(declaration, macro: "Transient", in: context)
         let binding = variable.bindings.first!
         let annotations = swiftDataPropertyAttributes(variable.attributes).map(swiftDataPropertyAttributeName)
         guard !annotations.contains("Attribute"), !annotations.contains("Relationship"),
@@ -47,10 +45,7 @@ struct TransientPropertyMacro: PeerMacro {
             }
         }
         let type = binding.typeAnnotation?.type
-        let markerType = type?.trimmedDescription == "_SwiftDataNoType"
-            || type?.trimmedDescription == "_SwiftDataNoType?"
-        let markerName = binding.pattern.as(IdentifierPatternSyntax.self)!.identifier.text.hasPrefix("_")
-        guard binding.initializer != nil || swiftDataPropertyIsOptional(type) || (markerType && markerName) else {
+        guard binding.initializer != nil || swiftDataPropertyIsOptional(type) else {
             throw MacroError("@Transient requires a default value so @Model can initialize it when loading backing data")
         }
         // This property intentionally remains ordinary stored state. @Model omits

@@ -55,7 +55,6 @@ struct PersistentModelMacro: MemberMacro, MemberAttributeMacro, ExtensionMacro {
         }
         return [
             """
-            @SwiftData.Transient
             private var _$backingData: any SwiftData.BackingData<\(raw: name)> = \(raw: name).createBackingData()
             """,
             """
@@ -76,7 +75,6 @@ struct PersistentModelMacro: MemberMacro, MemberAttributeMacro, ExtensionMacro {
             }
             """,
             """
-            @SwiftData.Transient
             private let _$observationRegistrar = Observation.ObservationRegistrar()
             """,
             "struct _SwiftDataNoType {}",
@@ -90,6 +88,7 @@ struct PersistentModelMacro: MemberMacro, MemberAttributeMacro, ExtensionMacro {
         in context: some MacroExpansionContext
     ) throws -> [AttributeSyntax] {
         guard let variable = member.as(VariableDeclSyntax.self),
+              !swiftDataIsInternalStorage(variable),
               let property = try SwiftDataModelProperty(variable), !property.isTransient else {
             return []
         }

@@ -48,7 +48,7 @@ struct PersistedPropertyMacro: AccessorMacro, PeerMacro {
         let type = optional ? "_SwiftDataNoType?" : "_SwiftDataNoType"
         let initializer = property.binding.initializer == nil ? "" : " = .init()"
         return [
-            "@SwiftData.Transient private var \(raw: property.marker): \(raw: type)\(raw: initializer)"
+            "private var \(raw: property.marker): \(raw: type)\(raw: initializer)"
         ]
     }
 }
