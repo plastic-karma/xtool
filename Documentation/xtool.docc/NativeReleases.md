@@ -116,6 +116,14 @@ Both SwiftPM build backends retain archived extension code whose entry points ar
 
 A successful build and local verification do not prove device behavior or Apple acceptance. Exercise SwiftData persistence/migrations, Watch installation/sync, widgets, AppIntents and protected capabilities on devices. `--unsigned` specifically does not establish distribution signing or TestFlight readiness.
 
+### Additional application checks
+
+The installed native CLI was also exercised with the XcodeGen projects in `plastic-karma/obsidian-git-mobile` (VaultLink) and `plastic-karma/weight-track` (Still), using Swift 6.4 and the iPhoneOS 26.5 SDK. Both retained their iOS 17 minimum, iPhone/iPad families, original local Swift package dependencies, app source membership, artwork, and privacy manifests without app-source or xtool implementation changes. VaultLink also compiled its transitive Yams/CYaml dependency and retained its public OAuth client ID and third-party licenses.
+
+VaultLink 1.3.0 (1790710501) produced an ad-hoc IPA; Still 1.1.0 (1790710501) produced a distribution-signed IPA using its existing external identity/profile, preserving HealthKit and background delivery without adding profile-only Health Records access. Both passed local release verification and archive-to-Payload byte checks. These runs did not upload to Apple or execute on a device.
+
+The builds still emit Swift Build's language-mode override warning. VaultLink's canonical Swift 5 language mode also permits existing `Sendable` diagnostics in `BaseDocument`; a move to Swift 6 language mode requires addressing those app diagnostics rather than suppressing them or silently changing the project's language mode.
+
 ## Development checks
 
 ```bash
