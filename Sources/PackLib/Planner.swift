@@ -20,10 +20,6 @@ public struct Planner: Sendable {
         return decoder
     }()
 
-    // anything older than this requires bundling the stdlib which
-    // is doable but probably not worth the effort
-    private static let minSupportedIOSVersion = "13.0"
-
     private func buildGraph() async throws -> PackageGraph {
         let dependencyRoot = try await dumpDependencies()
 
@@ -76,11 +72,16 @@ public struct Planner: Sendable {
         // TODO: cache plan using (Package.swift+Package.resolved) as the key?
 
         let graph = try await buildGraph()
+        let platform = buildSettings.platform
+        if schema.watchApp != nil, platform != .iOS {
+            throw StringError("watchApp requires an iOS main app; for standalone watchOS put the watch product at the top level")
+        }
 
         let app = try await product(
             from: graph,
             matching: schema.product,
             type: .application,
+            platform: platform,
             plist: schema.infoPath,
             idSpecifier: schema.idSpecifier,
             iconPath: schema.iconPath,
@@ -88,30 +89,65 @@ public struct Planner: Sendable {
             entitlementsPath: schema.entitlementsPath
         )
 
-        let extensionProducts: [Plan.Product]
-        if let extensions = schema.extensions, !extensions.isEmpty {
-            extensionProducts = try await withThrowingTaskGroup(of: Plan.Product.self) { group in
-                for ext in extensions {
-                    group.addTask {
-                        try await product(
-                            from: graph,
-                            matching: ext.product,
-                            type: .appExtension,
-                            plist: ext.infoPath,
-                            idSpecifier: ext.bundleID.flatMap(PackSchema.IDSpecifier.bundleID) ?? .orgID(app.bundleID),
-                            iconPath: nil,
-                            rootResources: ext.resources,
-                            entitlementsPath: ext.entitlementsPath
-                        )
-                    }
-                }
-                return try await group.reduce(into: []) { $0.append($1) }
-            }
-        } else {
-            extensionProducts = []
+        let extensionProducts = try await extensions(
+            schema.extensions, from: graph, app: app, platform: platform
+        )
+        var watchApp: Plan.Product?
+        var watchExtensions: [Plan.Product] = []
+        if let watch = schema.watchApp {
+            var companion = try await product(
+                from: graph,
+                matching: watch.product,
+                type: .application,
+                platform: .watchOS,
+                plist: watch.infoPath,
+                idSpecifier: watch.bundleID.map(PackSchema.IDSpecifier.bundleID) ?? .orgID(app.bundleID),
+                iconPath: nil,
+                rootResources: watch.resources,
+                entitlementsPath: watch.entitlementsPath
+            )
+            companion.watchAppProduct = companion.product
+            companion.infoPlist["WKCompanionAppBundleIdentifier"] = app.bundleID
+            watchExtensions = try await extensions(
+                watch.extensions, from: graph, app: companion, platform: .watchOS
+            )
+            watchApp = companion
         }
 
-        return Plan(app: app, extensions: extensionProducts)
+        let plan = Plan(app: app, extensions: extensionProducts, watchApp: watchApp, watchExtensions: watchExtensions)
+        let names = plan.allProducts.map(\.targetName)
+        guard Set(names).count == names.count else {
+            throw StringError("Every configured app and extension must use a distinct product")
+        }
+        return plan
+    }
+
+    private func extensions(
+        _ extensions: [PackSchema.Extension]?,
+        from graph: PackageGraph,
+        app: Plan.Product,
+        platform: BuildPlatform
+    ) async throws -> [Plan.Product] {
+        try await withThrowingTaskGroup(of: Plan.Product.self) { group in
+            for ext in extensions ?? [] {
+                group.addTask {
+                    var result = try await product(
+                        from: graph,
+                        matching: ext.product,
+                        type: .appExtension,
+                        platform: platform,
+                        plist: ext.infoPath,
+                        idSpecifier: ext.bundleID.map(PackSchema.IDSpecifier.bundleID) ?? .orgID(app.bundleID),
+                        iconPath: nil,
+                        rootResources: ext.resources,
+                        entitlementsPath: ext.entitlementsPath
+                    )
+                    result.watchAppProduct = app.watchAppProduct
+                    return result
+                }
+            }
+            return try await group.reduce(into: []) { $0.append($1) }
+        }
     }
 
     // swiftlint:disable cyclomatic_complexity function_parameter_count
@@ -119,6 +155,7 @@ public struct Planner: Sendable {
         from graph: PackageGraph,
         matching name: String?,
         type: Plan.ProductType,
+        platform: BuildPlatform,
         plist: String?,
         idSpecifier: PackSchema.IDSpecifier,
         iconPath: String?,
@@ -160,8 +197,8 @@ public struct Planner: Sendable {
         }
 
         let bundleID = idSpecifier.formBundleID(product: library.name)
-        let deploymentTarget = graph.root.platforms?.first { $0.name == "ios" }?.version
-            ?? Self.minSupportedIOSVersion
+        let deploymentTarget = graph.root.platforms?.first { $0.name == platform.rawValue }?.version
+            ?? platform.minimumDeploymentTarget
 
         var infoPlist: [String: Sendable] = [
             "CFBundleInfoDictionaryVersion": "6.0",
@@ -178,17 +215,20 @@ public struct Planner: Sendable {
 
         switch type {
         case .application:
-            infoPlist["UIDeviceFamily"] = [1, 2]
-            infoPlist["UISupportedInterfaceOrientations"] = ["UIInterfaceOrientationPortrait"]
-            infoPlist["UISupportedInterfaceOrientations~ipad"] = [
-                "UIInterfaceOrientationPortrait",
-                "UIInterfaceOrientationPortraitUpsideDown",
-                "UIInterfaceOrientationLandscapeLeft",
-                "UIInterfaceOrientationLandscapeRight",
-            ]
-            infoPlist["UILaunchScreen"] = [:] as [String: Sendable]
+            if platform == .iOS {
+                infoPlist["UIDeviceFamily"] = [1, 2]
+                infoPlist["UISupportedInterfaceOrientations"] = ["UIInterfaceOrientationPortrait"]
+                infoPlist["UISupportedInterfaceOrientations~ipad"] = [
+                    "UIInterfaceOrientationPortrait",
+                    "UIInterfaceOrientationPortraitUpsideDown",
+                    "UIInterfaceOrientationLandscapeLeft",
+                    "UIInterfaceOrientationLandscapeRight",
+                ]
+                infoPlist["UILaunchScreen"] = [:] as [String: Sendable]
+            } else {
+                infoPlist["WKApplication"] = true
+            }
         case .appExtension:
-            // Should set default parameters?
             infoPlist["NSExtension"] = [:] as [String: Sendable]
         }
 
@@ -201,9 +241,15 @@ public struct Planner: Sendable {
                 throw StringError("Info.plist has invalid format: expected a dictionary.")
             }
         }
+        platform.applyBundleMetadata(
+            to: &infoPlist,
+            simulator: buildSettings.triple.contains("simulator"),
+            application: type == .application
+        )
 
         return Plan.Product(
             type: type,
+            platform: platform,
             product: library.name,
             deploymentTarget: deploymentTarget,
             bundleID: bundleID,
@@ -294,9 +340,11 @@ public struct Planner: Sendable {
 public struct Plan: Sendable {
     public var app: Product
     public var extensions: [Product]
+    public var watchApp: Product?
+    public var watchExtensions: [Product] = []
 
     public var allProducts: [Product] {
-        [app] + extensions
+        [app] + extensions + (watchApp.map { [$0] } ?? []) + watchExtensions
     }
 
     public enum Resource: Codable, Sendable, Hashable {
@@ -308,6 +356,7 @@ public struct Plan: Sendable {
 
     public struct Product: Sendable {
         public var type: ProductType
+        public var platform: BuildPlatform
         public var product: String
         public var deploymentTarget: String
         public var bundleID: String
@@ -315,18 +364,26 @@ public struct Plan: Sendable {
         public var resources: [Resource]
         public var iconPath: String?
         public var entitlementsPath: String?
+        public var watchAppProduct: String?
 
         public var targetName: String {
             "\(self.product)-\(self.type.targetSuffix)"
         }
 
         public func directory(inApp baseDir: URL) -> URL {
+            let container: URL
+            if let watchAppProduct {
+                container = baseDir
+                    .appendingPathComponent("Watch", isDirectory: true)
+                    .appendingPathComponent("\(watchAppProduct).app", isDirectory: true)
+            } else {
+                container = baseDir
+            }
             switch type {
             case .application:
-                baseDir
-                    .appendingPathComponent(".", isDirectory: true)
+                return container.appendingPathComponent(".", isDirectory: true)
             case .appExtension:
-                baseDir
+                return container
                     .appendingPathComponent("PlugIns", isDirectory: true)
                     .appendingPathComponent(product, isDirectory: true)
                     .appendingPathExtension("appex")

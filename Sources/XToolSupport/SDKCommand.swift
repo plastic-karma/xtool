@@ -22,6 +22,21 @@ struct SDKCommand: AsyncParsableCommand {
     )
 }
 
+struct SDKToolingOptions: ParsableArguments {
+    @Option(help: "Use a local toolset with ld64.lld, libtool, dsymutil, llvm-lipo, and llvm-install-name-tool in bin/.")
+    var toolset: String?
+
+    @Option(help: "Use a local OpenAppleMacrosServer executable.")
+    var macrosServer: String?
+
+    var sources: SDKBuilder.ToolingSources {
+        SDKBuilder.ToolingSources(
+            toolset: toolset.map { URL(fileURLWithPath: $0).standardizedFileURL },
+            macrosServer: macrosServer.map { URL(fileURLWithPath: $0).standardizedFileURL }
+        )
+    }
+}
+
 struct DevSDKBuildCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "build",
@@ -46,11 +61,13 @@ struct DevSDKBuildCommand: AsyncParsableCommand {
         )
     ) var arch: ArchSelection = .auto
 
+    @OptionGroup var tooling: SDKToolingOptions
+
     func run() async throws {
         let builderArch = try arch.sdkBuilderArch
         let input = try SDKBuilder.Input(path: path)
         let output = URL(fileURLWithPath: outputDir, isDirectory: true).appending(path: "darwin.xtoolsdk")
-        let builder = SDKBuilder(input: input, output: output, arch: builderArch, mode: .buildSlim)
+        let builder = SDKBuilder(input: input, output: output, arch: builderArch, mode: .buildSlim, tooling: tooling.sources)
         try await builder.buildSDK()
         print("Built SDK at \(output.path). You can install it with `xtool sdk install`.")
     }
@@ -96,8 +113,10 @@ struct DevSDKInstallCommand: AsyncParsableCommand {
     )
     var slim = false
 
+    @OptionGroup var tooling: SDKToolingOptions
+
     func run() async throws {
-        try await InstallSDKOperation(path: path, slim: slim).run()
+        try await InstallSDKOperation(path: path, slim: slim, tooling: tooling.sources).run()
     }
 }
 
@@ -107,8 +126,10 @@ struct DevSDKUpdateCommand: AsyncParsableCommand {
         abstract: "Update the installed Darwin Swift SDK"
     )
 
+    @OptionGroup var tooling: SDKToolingOptions
+
     func run() async throws {
-        try await UpdateSDKOperation().run()
+        try await UpdateSDKOperation(tooling: tooling.sources).run()
     }
 }
 
@@ -210,10 +231,12 @@ struct EnsureSDKOperation {
 struct InstallSDKOperation {
     let path: String
     let slim: Bool
+    let tooling: SDKBuilder.ToolingSources
 
-    init(path: String, slim: Bool = false) {
+    init(path: String, slim: Bool = false, tooling: SDKBuilder.ToolingSources = .init()) {
         self.path = path
         self.slim = slim
+        self.tooling = tooling
     }
 
     func run() async throws {
@@ -224,6 +247,9 @@ struct InstallSDKOperation {
         let temporaryBundle = try DarwinSDK.prepareTemporaryBundle()
 
         if path.hasSuffix(".xtoolsdk") {
+            guard tooling.toolset == nil, tooling.macrosServer == nil else {
+                throw Console.Error("Custom tooling options require Xcode.xip or Xcode.app, not a prebuilt SDK.")
+            }
             print("Installing prebuilt SDK...")
             try await FileManager.default.copyItem(at: URL(filePath: path), to: temporaryBundle.url, preserveOwner: false)
         } else {
@@ -232,7 +258,7 @@ struct InstallSDKOperation {
             let arch = try ArchSelection.auto.sdkBuilderArch
 
             let mode: SDKBuilder.Mode = slim ? .buildSlim : .buildNormal
-            let builder = SDKBuilder(input: input, output: temporaryBundle.url, arch: arch, mode: mode)
+            let builder = SDKBuilder(input: input, output: temporaryBundle.url, arch: arch, mode: mode, tooling: tooling)
             try await builder.buildSDK()
         }
 
@@ -247,6 +273,8 @@ struct InstallSDKOperation {
 }
 
 struct UpdateSDKOperation {
+    var tooling = SDKBuilder.ToolingSources()
+
     func run() async throws {
         #if os(macOS)
         print("Skipping SDK install; the iOS SDK ships with Xcode on macOS")
@@ -267,7 +295,15 @@ struct UpdateSDKOperation {
         let arch = try ArchSelection.auto.sdkBuilderArch
 
         let temporaryBundle = try DarwinSDK.prepareTemporaryBundle()
-        let builder = SDKBuilder(input: input, output: temporaryBundle.url, arch: arch, mode: .update)
+        let toolingFile = existing.bundle.appendingPathComponent(SDKBuilder.ToolingSources.filename)
+        var sources = FileManager.default.fileExists(atPath: toolingFile.path)
+            ? try JSONDecoder().decode(SDKBuilder.ToolingSources.self, from: Data(contentsOf: toolingFile))
+            : SDKBuilder.ToolingSources()
+        if let toolset = tooling.toolset { sources.toolset = toolset }
+        if let macrosServer = tooling.macrosServer { sources.macrosServer = macrosServer }
+        let builder = SDKBuilder(
+            input: input, output: temporaryBundle.url, arch: arch, mode: .update, tooling: sources
+        )
         try await builder.buildSDK()
 
         guard DarwinSDK(bundle: temporaryBundle.url) != nil else {

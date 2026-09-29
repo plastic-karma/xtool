@@ -13,3 +13,14 @@ DerivedData/
 
 /openapi
 /.tmp
+
+# Native release workspaces, Python bytecode, and external signing material.
+/.xtool/
+__pycache__/
+*.pyc
+*.p8
+*.p12
+*.mobileprovision
+*.key
+*.pem
+**/.build/

@@ -21,6 +21,7 @@ public struct PackSchemaBase: Codable, Sendable {
     public var resources: [String]?
 
     public var extensions: [Extension]?
+    public var watchApp: WatchApp?
 
     /// Skip auto-creating the LSP support file if it's missing.
     public var skipLSP: Bool?
@@ -31,6 +32,15 @@ public struct PackSchemaBase: Codable, Sendable {
         public var infoPath: String
         public var resources: [String]?
         public var entitlementsPath: String?
+    }
+
+    public struct WatchApp: Codable, Sendable {
+        public var product: String
+        public var bundleID: String?
+        public var infoPath: String
+        public var resources: [String]?
+        public var entitlementsPath: String?
+        public var extensions: [Extension]?
     }
 }
 

@@ -75,8 +75,42 @@ struct SDKBuilder {
     let arch: Arch
     let mode: Mode
 
+    struct ToolingSources: Codable {
+        var toolset: URL?
+        var macrosServer: URL?
+
+        static let filename = "sdk-tooling.json"
+
+        func validate(output: URL) throws {
+            let outputPath = output.resolvingSymlinksInPath().standardizedFileURL.path
+            for source in [toolset, macrosServer].compactMap({ $0 }) {
+                let sourcePath = source.resolvingSymlinksInPath().standardizedFileURL.path
+                guard sourcePath != outputPath,
+                      !sourcePath.hasPrefix(outputPath + "/"),
+                      !outputPath.hasPrefix(sourcePath + "/") else {
+                    throw Console.Error("Custom tooling source must not overlap SDK output: \(source.path)")
+                }
+            }
+            if let toolset {
+                for binary in ["ld64.lld", "libtool", "dsymutil", "llvm-lipo", "llvm-install-name-tool"] {
+                    let path = toolset.appendingPathComponent("bin/\(binary)").path
+                    guard FileManager.default.isExecutableFile(atPath: path) else {
+                        throw Console.Error("Custom toolset executable is missing or not executable: \(path)")
+                    }
+                }
+            }
+            if let macrosServer, !FileManager.default.isExecutableFile(atPath: macrosServer.path) {
+                throw Console.Error("Custom macros server is missing or not executable: \(macrosServer.path)")
+            }
+        }
+    }
+
+    var tooling = ToolingSources()
+
+    static let platforms = ["iPhoneOS", "MacOSX", "iPhoneSimulator", "WatchOS", "WatchSimulator"]
+
     // bump this when the sdk builder logic changes
-    static let sdkEpoch = 3
+    static let sdkEpoch = 4
 
     // tag from https://github.com/xtool-org/darwin-tools-linux-llvm
     static let darwinToolsVersion = "1.1.0"
@@ -98,6 +132,7 @@ struct SDKBuilder {
     // swiftlint:disable:next function_body_length
     func buildSDK() async throws {
         let sdkVersion = Self.currentSDKVersion
+        try tooling.validate(output: output)
 
         try? FileManager.default.removeItem(at: output)
         try FileManager.default.createDirectory(
@@ -137,15 +172,12 @@ struct SDKBuilder {
             )
         }
 
-        let iPhoneOSSDK = try sdk(platform: "iPhoneOS", prefix: "iPhoneOS")
-        let iPhoneSimSDK = try sdk(platform: "iPhoneSimulator", prefix: "iPhoneSimulator")
-        let macOSSDK = try sdk(platform: "MacOSX", prefix: "MacOSX")
-
-        print("""
-        - \(iPhoneOSSDK)
-        - \(iPhoneSimSDK)
-        - \(macOSSDK)
-        """)
+        var sdks: [String: String] = [:]
+        for platform in Self.platforms {
+            let name = try sdk(platform: platform, prefix: platform)
+            sdks[platform] = name
+            print("- \(name)")
+        }
 
         print("[Writing metadata]")
         try """
@@ -213,16 +245,30 @@ struct SDKBuilder {
             encoding: .utf8
         )
 
-        let sdkDefinition = SDKDefinition(
-            schemaVersion: "4.0",
-            targetTriples: [
-                "arm64-apple-ios": triple(platform: "iPhoneOS", sdk: iPhoneOSSDK),
-                "arm64-apple-ios-simulator": triple(platform: "iPhoneSimulator", sdk: iPhoneSimSDK),
-                "x86_64-apple-ios-simulator": triple(platform: "iPhoneSimulator", sdk: iPhoneSimSDK),
-                "arm64-apple-macosx": triple(platform: "MacOSX", sdk: macOSSDK),
-                "x86_64-apple-macosx": triple(platform: "MacOSX", sdk: macOSSDK),
-            ]
-        )
+        var triples: [String: SDKDefinition.Triple] = [:]
+        for (platform, targets) in [
+            ("iPhoneOS", ["arm64-apple-ios"]),
+            ("iPhoneSimulator", ["arm64-apple-ios-simulator", "x86_64-apple-ios-simulator"]),
+            ("MacOSX", ["arm64-apple-macosx", "x86_64-apple-macosx"]),
+        ] {
+            for target in targets {
+                triples[target] = triple(platform: platform, sdk: sdks[platform]!)
+            }
+        }
+        for (platform, target, suffix, architectures) in [
+            ("WatchOS", "watchos", "", ["arm64_32", "arm64"]),
+            ("WatchSimulator", "watchsimulator", "-simulator", ["arm64", "x86_64"]),
+        ] {
+            let sdkName = sdks[platform]!
+            let settingsURL = dev.appendingPathComponent(
+                "Platforms/\(platform).platform/Developer/SDKs/\(sdkName)/SDKSettings.json"
+            )
+            let supported = try Self.supportedArchitectures(in: Data(contentsOf: settingsURL), target: target)
+            for architecture in architectures where supported.contains(architecture) {
+                triples["\(architecture)-apple-watchos\(suffix)"] = triple(platform: platform, sdk: sdkName)
+            }
+        }
+        let sdkDefinition = SDKDefinition(schemaVersion: "4.0", targetTriples: triples)
 
         let encoder = JSONEncoder()
         try encoder
@@ -231,16 +277,38 @@ struct SDKBuilder {
 
         try Data("\(sdkVersion)\n".utf8)
             .write(to: output.appendingPathComponent("darwin-sdk-version.txt"))
+        try encoder.encode(tooling).write(to: output.appendingPathComponent(ToolingSources.filename))
     }
 
-    // swiftlint:disable:next function_body_length
+    static func supportedArchitectures(in settings: Data, target: String) throws -> Set<String> {
+        struct Settings: Decodable {
+            struct Target: Decodable {
+                let Archs: [String]
+            }
+            let SupportedTargets: [String: Target]
+        }
+        let settings = try JSONDecoder().decode(Settings.self, from: settings)
+        guard let targetSettings = settings.SupportedTargets[target] else {
+            throw Console.Error("SDK does not contain supported target '\(target)'")
+        }
+        return Set(targetSettings.Archs)
+    }
+
     private func installToolset(in output: URL) async throws {
         let toolsetDir = output.appendingPathComponent("toolset")
 
-        try FileManager.default.createDirectory(
-            at: toolsetDir,
-            withIntermediateDirectories: false
-        )
+        if let source = tooling.toolset {
+            print("[Copying local toolset]")
+            try await FileManager.default.copyItem(at: source, to: toolsetDir, preserveOwner: false)
+        } else {
+            try await downloadToolset(to: toolsetDir)
+        }
+
+        try transformToolset(at: toolsetDir)
+    }
+
+    private func downloadToolset(to toolsetDir: URL) async throws {
+        try FileManager.default.createDirectory(at: toolsetDir, withIntermediateDirectories: false)
 
         @Dependency(\.httpClient) var httpClient
         let url = URL(string: """
@@ -280,6 +348,9 @@ struct SDKBuilder {
             try await execution.standardInputWriter.finish()
         }
         .checkSuccess()
+    }
+
+    private func transformToolset(at toolsetDir: URL) throws {
 
         // swift-build assumes we have an Apple-flavored librarian for Apple platforms
         // (https://github.com/swiftlang/swift-build/blob/b2433e74e/Sources/SWBCore/SpecImplementations/Tools/LinkerTools.swift#L1735)
@@ -386,6 +457,15 @@ struct SDKBuilder {
     }
 
     private func installMacros(in output: URL) async throws {
+        if let source = tooling.macrosServer {
+            print("[Copying local OpenAppleMacros]")
+            try await FileManager.default.copyItem(
+                at: source,
+                to: output.appendingPathComponent("OpenAppleMacrosServer"),
+                preserveOwner: false
+            )
+            return
+        }
         @Dependency(\.httpClient) var httpClient
         let url = URL(string: """
         https://github.com/xtool-org/OpenAppleMacros/releases/download/\
@@ -552,7 +632,7 @@ struct SDKBuilder {
 
         print("[Finalizing SDKs]")
 
-        for platform in ["iPhoneOS", "MacOSX", "iPhoneSimulator"] {
+        for platform in Self.platforms {
             let lib = "../../../../../Library"
             let platformDir = dev.appending(path: "Platforms/\(platform).platform")
 
@@ -570,25 +650,19 @@ struct SDKBuilder {
 
             let fwk = platformDir.appending(path: "Developer/SDKs/\(platform).sdk/System/Library/Frameworks").path
 
-            try FileManager.default.createSymbolicLink(
-                atPath: "\(fwk)/Testing.framework",
-                withDestinationPath: "\(lib)/Frameworks/Testing.framework"
-            )
-
-            try FileManager.default.createSymbolicLink(
-                atPath: "\(fwk)/XCTest.framework",
-                withDestinationPath: "\(lib)/Frameworks/XCTest.framework"
-            )
-
-            try FileManager.default.createSymbolicLink(
-                atPath: "\(fwk)/XCUIAutomation.framework",
-                withDestinationPath: "\(lib)/Frameworks/XCUIAutomation.framework"
-            )
-
-            try FileManager.default.createSymbolicLink(
-                atPath: "\(fwk)/XCTestCore.framework",
-                withDestinationPath: "\(lib)/PrivateFrameworks/XCTestCore.framework"
-            )
+            for (framework, directory) in [
+                ("Testing", "Frameworks"),
+                ("XCTest", "Frameworks"),
+                ("XCUIAutomation", "Frameworks"),
+                ("XCTestCore", "PrivateFrameworks"),
+            ] {
+                let source = platformDir.appendingPathComponent("Developer/Library/\(directory)/\(framework).framework")
+                guard source.dirExists else { continue }
+                try FileManager.default.createSymbolicLink(
+                    atPath: "\(fwk)/\(framework).framework",
+                    withDestinationPath: "\(lib)/\(directory)/\(framework).framework"
+                )
+            }
 
             /*
              Apply patches to load OpenAppleMacros as the swift-plugin-server
@@ -606,14 +680,14 @@ struct SDKBuilder {
             let hostDir = platformDir.appendingPathComponent("Developer/usr/lib/swift/host")
             let pluginsDir = hostDir.appendingPathComponent("plugins")
 
-            if platform == "iPhoneSimulator" {
-                // The iPhoneSimulator platform doesn't contain plugins; Xcode seems to be hardcoded
-                // to look at the ones from iPhoneOS.platform. We can symlink the iPhoneOS ones too.
+            if platform == "iPhoneSimulator" || platform == "WatchSimulator" {
+                // Simulator platforms use the macro plugins from their device platforms.
+                let devicePlatform = platform == "WatchSimulator" ? "WatchOS" : "iPhoneOS"
                 try? FileManager.default.createDirectory(at: hostDir, withIntermediateDirectories: true)
                 try? FileManager.default.removeItem(at: pluginsDir)
                 try FileManager.default.createSymbolicLink(
                     atPath: pluginsDir.path,
-                    withDestinationPath: "../../../../../../iPhoneOS.platform/Developer/usr/lib/swift/host/plugins"
+                    withDestinationPath: "../../../../../../\(devicePlatform).platform/Developer/usr/lib/swift/host/plugins"
                 )
             } else {
                 try? FileManager.default.removeItem(at: pluginsDir)
@@ -622,7 +696,11 @@ struct SDKBuilder {
                 // the files are stubs (empty) because we just need them to convince swiftc that
                 // yes we can handle said modules. the actual logic lives in the OpenAppleMacros
                 // server.
-                for library in Self.oamLibraries {
+                // The source-built server additionally implements Darwin Foundation and SwiftData.
+                // The downloaded upstream release does not advertise these modules.
+                let libraries = Self.oamLibraries
+                    + (tooling.macrosServer != nil ? ["FoundationMacros", "SwiftDataMacros"] : [])
+                for library in libraries {
                     let target = pluginsDir.appendingPathComponent("lib\(library).so")
                     try Data().write(to: target)
                 }
@@ -833,7 +911,7 @@ struct SDKEntry {
             E("swift_static"),
             E("clang"),
         ]),
-        E("Platforms", ["iPhoneOS", "MacOSX", "iPhoneSimulator"].map {
+        E("Platforms", SDKBuilder.platforms.map {
             E("\($0).platform", [
                 E("Info.plist"),
                 E("Developer", [

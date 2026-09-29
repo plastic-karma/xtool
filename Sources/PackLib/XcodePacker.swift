@@ -15,6 +15,12 @@ public struct XcodePacker {
 
     // swiftlint:disable:next function_body_length
     public func createProject() async throws -> URL {
+        guard plan.allProducts.allSatisfy({ $0.platform == .iOS }) else {
+            throw StringError(
+                "The Xcode project generator does not support watchOS products. "
+                + "Use `xtool dev build` without --xcode to build the complete watchOS bundle."
+            )
+        }
         let xtoolDir: Path = "xtool"
 
         let projectDir: Path = xtoolDir + ".xtool-tmp"

@@ -12,6 +12,8 @@ public struct BuildSettings: Sendable {
     public let configuration: BuildConfiguration
     public let triple: String
     public let buildSystem: BuildSystem
+    public let platform: BuildPlatform
+    public let watchTriple: String?
     public let customOptions: [String]
 
     public var sdkOptions: [String]
@@ -33,6 +35,7 @@ public struct BuildSettings: Sendable {
         configuration: BuildConfiguration,
         triple: String,
         buildSystem: BuildSystem? = nil,
+        watchTriple: String? = nil,
         packagePath: String = ".",
         options: [String] = []
     ) async throws {
@@ -40,6 +43,11 @@ public struct BuildSettings: Sendable {
         self.configuration = configuration
         self.customOptions = options
         self.triple = triple
+        self.platform = try BuildPlatform(triple: triple)
+        self.watchTriple = watchTriple
+        if let watchTriple, try BuildPlatform(triple: watchTriple) != .watchOS {
+            throw StringError("The companion watch triple must target watchOS: \(watchTriple)")
+        }
         self.buildSystem = if let buildSystem { buildSystem } else { try await .default() }
 
         self.sdkEnvironment = [
@@ -111,6 +119,73 @@ public struct BuildSettings: Sendable {
         var copy = self
         copy.packagePath = path
         return copy
+    }
+
+    public func forPlatform(_ platform: BuildPlatform) async throws -> Self {
+        if platform == self.platform { return self }
+        guard platform == .watchOS, self.platform == .iOS else {
+            throw StringError("Cannot build \(platform.rawValue) products using \(triple)")
+        }
+        let companionTriple = watchTriple ?? (
+            triple.contains("simulator")
+                ? "\(triple.split(separator: "-")[0])-apple-watchos-simulator"
+                : "arm64_32-apple-watchos"
+        )
+        guard companionTriple.contains("simulator") == triple.contains("simulator") else {
+            throw StringError("The app and companion watch app must both target devices or both target simulators")
+        }
+        return try await Self(
+            configuration: configuration,
+            triple: companionTriple,
+            buildSystem: buildSystem,
+            packagePath: packagePath,
+            options: customOptions
+        )
+    }
+
+    func companionWatchBuildSettings() async throws -> [Self] {
+        let primary = try await forPlatform(.watchOS)
+        guard watchTriple == nil, !triple.contains("simulator") else {
+            return [primary]
+        }
+        let arm64 = try await Self(
+            configuration: configuration,
+            triple: "arm64-apple-watchos",
+            buildSystem: buildSystem,
+            packagePath: packagePath,
+            options: customOptions
+        )
+        return [primary, arm64]
+    }
+
+    var architecture: String {
+        String(triple.prefix { $0 != "-" })
+    }
+
+    func deploymentTarget(for requested: String) -> String {
+        // Device arm64 uses the watchOS 26 ABI. arm64_32 retains the app's
+        // older deployment target; arm64 simulators do not use this ABI floor.
+        if platform == .watchOS, architecture == "arm64", !triple.contains("simulator"),
+           requested.compare("26.0", options: .numeric) == .orderedAscending {
+            return "26.0"
+        }
+        return requested
+    }
+
+    public var scratchPath: String {
+        platform == .watchOS ? ".build/xtool-watchos/\(architecture)" : ".build"
+    }
+
+    public var binaryDirectory: URL {
+        let path: String
+        switch buildSystem {
+        case .swiftPM:
+            path = "\(triple)/\(configuration.rawValue)"
+        case .swiftBuild:
+            let platformName = platform.sdkName(simulator: triple.contains("simulator"))
+            path = "out/Products/\(configuration.swiftBuildValue)-\(platformName)"
+        }
+        return URL(fileURLWithPath: "\(scratchPath)/\(path)", isDirectory: true)
     }
 
     public func swiftPMInvocation(
@@ -193,6 +268,70 @@ public enum BuildSystem: Sendable {
         switch self {
         case .swiftPM: "native"
         case .swiftBuild: "swiftbuild"
+        }
+    }
+}
+
+public enum BuildPlatform: String, Sendable {
+    case iOS = "ios"
+    case watchOS = "watchos"
+
+    public init(triple: String) throws {
+        let components = triple.split(separator: "-")
+        guard components.count >= 3, components[1] == "apple" else {
+            throw StringError("Expected an Apple iOS or watchOS target triple, got '\(triple)'")
+        }
+        if components[2].hasPrefix("watchos") {
+            self = .watchOS
+        } else if components[2].hasPrefix("ios") {
+            self = .iOS
+        } else {
+            throw StringError("Unsupported app platform in target triple '\(triple)'; use iOS or watchOS")
+        }
+    }
+
+    var packagePlatform: String {
+        switch self {
+        case .iOS: "iOS"
+        case .watchOS: "watchOS"
+        }
+    }
+
+    var minimumDeploymentTarget: String {
+        switch self {
+        case .iOS: "13.0"
+        case .watchOS: "6.0"
+        }
+    }
+
+    func sdkName(simulator: Bool) -> String {
+        switch self {
+        case .iOS: simulator ? "iphonesimulator" : "iphoneos"
+        case .watchOS: simulator ? "watchsimulator" : "watchos"
+        }
+    }
+
+    func supportedPlatform(simulator: Bool) -> String {
+        switch self {
+        case .iOS: simulator ? "iPhoneSimulator" : "iPhoneOS"
+        case .watchOS: simulator ? "WatchSimulator" : "WatchOS"
+        }
+    }
+
+    func applyBundleMetadata(to info: inout [String: any Sendable], simulator: Bool, application: Bool) {
+        info["CFBundleSupportedPlatforms"] = [supportedPlatform(simulator: simulator)]
+        switch self {
+        case .iOS:
+            info["UIRequiredDeviceCapabilities"] = info["UIRequiredDeviceCapabilities"] ?? ["arm64"]
+            if application {
+                info["LSRequiresIPhoneOS"] = true
+            }
+        case .watchOS:
+            info["UIDeviceFamily"] = [4]
+            info.removeValue(forKey: "LSRequiresIPhoneOS")
+            info.removeValue(forKey: "UISupportedInterfaceOrientations")
+            info.removeValue(forKey: "UISupportedInterfaceOrientations~ipad")
+            info.removeValue(forKey: "UILaunchScreen")
         }
     }
 }

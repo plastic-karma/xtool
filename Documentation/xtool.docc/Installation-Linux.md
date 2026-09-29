@@ -140,6 +140,38 @@ swift sdk list
 # darwin
 ```
 
+### Building the toolset locally
+
+The SDK includes WatchOS and WatchSimulator when supplied by Xcode. Device Watch apps need an `arm64_32` linker in addition to the normal `arm64` linker; the released LLVM toolset does not provide that architecture.
+
+From an xtool source checkout, build the pinned LLVM tools, Apple ld64/TAPI port, OpenAppleMacros server, and local xtool executable:
+
+```bash
+# Requires Swift 6.4, Clang, CMake, Ninja, Make, Git, pkg-config,
+# and development headers for OpenSSL, zlib, libbsd, and libuuid.
+scripts/build-linux-toolset.sh "$HOME/.cache/xtool-native"
+```
+
+The Watch-capable signer is vendored in `Vendor/zsign`, with its upstream revision and repairs recorded in `UPSTREAM.json`. It fixes universal-container padding, per-slice executable bounds, ARM64 page/segment alignment, and dual-hash CMS attributes. Apple's [strict universal-binary validation](https://github.com/apple-oss-distributions/Security/blob/main/OSX/include/security_utilities/macho%2B%2B.cpp) rejects any bytes after the final slice, even when every CodeDirectory hash verifies. There is no editable dependency on a cache directory.
+
+The script installs the toolset and source-built macro server under `${XDG_DATA_HOME:-$HOME/.local/share}/xtool/native`, or the absolute prefix supplied as its second argument. Pass these durable locations to `xtool sdk install`, or replace the tooling of an existing normal SDK with `xtool sdk update`:
+
+```bash
+XTOOL_BIN="$(swift build --show-bin-path)/xtool"
+NATIVE="${XTOOL_NATIVE_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/xtool/native}"
+"$XTOOL_BIN" sdk update \
+  --toolset "$NATIVE/toolset" \
+  --macros-server "$NATIVE/bin/OpenAppleMacrosServer"
+```
+
+`--toolset` expects `bin/ld64.lld`, `bin/libtool`, `bin/dsymutil`, `bin/llvm-lipo`, and `bin/llvm-install-name-tool`. The entire directory is copied, including supporting libraries. `--macros-server` is copied separately. Both options are also available on `xtool sdk build` and `xtool sdk install` with Xcode input.
+
+Normal SDK updates retain the custom source locations in `sdk-tooling.json`; keep those locations available or supply replacement paths when updating. An unavailable custom source is an error, not a fallback to downloaded tools.
+
+Use a Swift compiler compatible with the imported SDK and your app's source. xtool selects Swift Build with Swift 6.4 or newer, and the native SwiftPM backend with older supported compilers. Installing or updating the SDK copies the selected host compiler's Clang headers while retaining Apple's runtime libraries.
+
 ## Next steps
 
 You're now ready to use xtool! See <doc:First-app>.
+
+For reusable Xcode/XcodeGen app builds, native resources, external distribution signing, and explicit TestFlight upload, see <doc:NativeReleases>.

@@ -1,0 +1,35 @@
+{
+  "repository": "https://github.com/xtool-org/OpenAppleMacros",
+  "revision": "4078c0e615d288134fb2453f02616135b2b94d1b",
+  "license": "MIT; original LICENSE.md retained",
+  "changes": [
+    "SwiftData Model, Query, persisted-property and schema annotation macros using Apple's public backing-store and DynamicProperty APIs",
+    "Source schema Attribute/Relationship/Transient and Unique handling, with explicit errors for unsupported model forms",
+    "Pinned upstream Foundation predicate, expression and bundle macro implementations, compiled with FOUNDATION_FRAMEWORK for Darwin SDK expansion"
+  ],
+  "grounding": [
+    "Public SwiftData API and macro declarations in the imported Apple SDK",
+    "https://fatbobman.com/en/posts/unveiling-the-data-modeling-principles-of-swiftdata/",
+    "Original Xcode 26.6 SwiftDataMacros plugin templates: Unique metadata name, Schema.encodingVersion keypath, availability guard and nonisolated conformances"
+  ],
+  "foundationMacros": {
+    "repository": "https://github.com/swiftlang/swift-foundation",
+    "tag": "swift-6.3.3-RELEASE",
+    "revision": "dbacc67779dc0a41ddc9493acbaa332d76c9fb03",
+    "license": "Apache-2.0 WITH Swift-exception; FoundationMacros-LICENSE.txt and FoundationMacros-NOTICE.txt retained",
+    "sources": {
+      "Sources/FoundationMacros/PredicateMacro.swift": {
+        "upstreamSHA256": "1a05774a8ddc5fa045fad2d80980860b609edfc70564e1b6b64d95acf81df144",
+        "changes": "Handle SwiftSyntax 604 method-keypath components as unsupported; FOUNDATION_FRAMEWORK selects upstream Darwin expansion semantics."
+      },
+      "Sources/FoundationMacros/BundleMacro.swift": {
+        "upstreamSHA256": "255d07477a59c3cd39aa988f33696d80b087f887ae31c53312ef93ec82e09bcd",
+        "changes": "None; retained because the Apple Foundation module also declares this external macro."
+      }
+    },
+    "integration": "Macros.swift registers PredicateMacro, ExpressionMacro and BundleMacro in OpenAppleMacrosServer. SDKBuilder routes FoundationMacros to this server only when importing with a custom macros server.",
+    "licenseSHA256": "2245a990b635558be210fb3eb4f8a6f7a49aebc0fefbf5859146a65ddc7ddcf3",
+    "noticeSHA256": "c2e757911b86a76230099804831d8d847a865e88b5912171627492a7a49f0456"
+  },
+  "runtimeValidation": "Cross-compilation is not a substitute for testing SwiftData persistence and migrations on Apple devices."
+}

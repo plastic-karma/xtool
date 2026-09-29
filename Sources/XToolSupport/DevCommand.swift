@@ -12,6 +12,9 @@ struct PackOperation {
             help: "Build with configuration"
         ) var configuration: BuildConfiguration = .debug
 
+        @Option(help: "Build an embedded watch app for one triple instead of both arm64_32 and arm64 device architectures.")
+        var watchTriple: String?
+
         init() {}
 
         init(configuration: BuildConfiguration) {
@@ -57,6 +60,7 @@ struct PackOperation {
         let buildSettings = try await BuildSettings(
             configuration: buildOptions.configuration,
             triple: triple ?? Self.defaultTriple,
+            watchTriple: buildOptions.watchTriple,
             options: []
         )
 
@@ -123,7 +127,7 @@ struct DevBuildCommand: AsyncParsableCommand {
         commandName: "build",
         abstract: "Build app with SwiftPM",
         discussion: """
-        This command builds the SwiftPM-based iOS app in the current directory
+        Build the SwiftPM-based iOS or watchOS app in the current directory, including configured companion watch apps.
         """
     )
 

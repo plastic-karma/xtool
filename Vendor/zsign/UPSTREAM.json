@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/xtool-org/zsign",
+  "revision": "f6158be9e62a5ce2a53d72b1a6d880880da956c8",
+  "license": "MIT; embedded zlib/minizip and Mach-O notices retained in source files",
+  "changes": [
+    "Per-instance executable segment bounds for universal slices",
+    "ARM64/ARM64_32 16K code pages and LINKEDIT VM alignment",
+    "Complete SHA1/SHA256 CMS hash-agility attributes",
+    "Zero padding only between universal slices, never after the last slice",
+    "Compute load-command slack from the first file-backed TEXT section, including images without __text",
+    "Require space for the entire code-signature load command before insertion"
+  ],
+  "omitted": "Standalone zsign CLI and unused Windows/minizip tooling"
+}

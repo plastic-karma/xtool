@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "appIntents": {
+    "upstream": "https://github.com/xtool-org/xtool/pull/217",
+    "revision": "79b3782a8633716fd6a7d77456e818f207f79b3d",
+    "author": "foobisdweik",
+    "license": "MIT (repository LICENSE.md)",
+    "importedSources": ["Emitter.swift", "Generator.swift", "MangledName.swift", "Scanner.swift", "Schema.swift", "SystemProtocols.swift"],
+    "changes": [
+      "Standalone source-file CLI with module, bundle, display name, deployment target and platform arguments",
+      "Strict diagnostics instead of silent omissions and primitive placeholders",
+      "All shortcut builder statements and literal phrases, parameter descriptions, summaries, dialogs and enum defaults",
+      "Entity/query discovery and metadata, AppEnum display labels, control and widget configuration, live activity protocol mappings",
+      "Runtime entity display representations, query bodies, initializer assignments and request dialogs remain in compiled Swift, as in Xcode metadata"
+    ]
+  },
+  "dependencies": {
+    "AssetKit": {"path": "../../Vendor/AssetKit", "revision": "e763558b55fcbb5a443b1d7b2c6f0972d8bd14f7", "localRepairs": true},
+    "swift-syntax": {"url": "https://github.com/swiftlang/swift-syntax.git", "version": "604.0.0", "revision": "050f1a346fbbac0ca2cfb15a95274f7bd1cf0ccf"},
+    "swift-png": {"url": "https://github.com/tayloraswift/swift-png", "version": "4.5.1", "revision": "8a0bcd4df5e4b307c804937776a56dd6ecdf6396"},
+    "h": {"url": "https://github.com/rarestype/h", "version": "1.0.1", "revision": "aa3626829160917d4378330617971977cbd78f5b"}
+  },
+  "formatEvidence": [
+    {
+      "repository": "https://github.com/plastic-karma/lead-track",
+      "sourceRevision": "c4fb95ec223527523f2b26aea317e02bfdf3d3b2",
+      "workflowRun": "34382642698",
+      "artifact": "10116627947",
+      "generatorVersion": "17F113",
+      "purpose": "Diagnostic schema comparison only; never an input to either native compiler",
+      "observations": [
+        "APPEARANCEKEYS: UIAppearanceAny=0, UIAppearanceDark=1, ISAppearanceTintable=10",
+        "EntityQuery plus suggestedEntities: capabilities=66; entity.defaultQueryIdentifier is module qualified",
+        "WidgetConfigurationIntent and ControlConfigurationIntent: outputFlags=8, supportedModes=1, action.isDiscoverable=false; visibilityMetadata retains source discoverability",
+        "LiveActivityIntent maps to com.apple.link.systemProtocol.SessionStarting",
+        "Enum default is LNValueTypeSpecificMetadataKeyDefaultValue followed by a string.wrapper value; enum parameters use linkEnumeration.wrapper.identifier and capabilities=1",
+        "AppEntity parameters use entity.wrapper.typeName and dynamicOptionsSupport=1"
+      ]
+    },
+    {
+      "sourceRevision": "bbc1f37f309acf6d5469c54ed74aded6baa96952",
+      "application": "OTodo",
+      "purpose": "Previously inspected same-source Xcode archive and accepted native build, diagnostic only",
+      "observations": [
+        "String primitive identifier=0; URL primitive identifier=11",
+        "ProvidesDialog outputFlags=4; Summary uses actionConfiguration.actionSummary.wrapper",
+        "Shortcut phrase applicationName is represented as ${applicationName}, preserving every literal phrase",
+        "watchOS modern icon: 1024px scale1 idiom5 bitmap plus layout1010 part218 SISM multisize index"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+AppIntentsGen derives from the public, closed, unmerged xtool pull request #217,
+"feat: pure-Swift AppIntents metadata generator for Linux", by foobisdweik.
+Source revision: 79b3782a8633716fd6a7d77456e818f207f79b3d.
+https://github.com/xtool-org/xtool/pull/217
+
+The imported scanner, schema, emitter, mangling and system protocol code is
+licensed under this repository's MIT license (../../LICENSE.md), copyright
+(c) 2024 Kabir Oberai. Subsequent changes are recorded in provenance.json.
+
+AssetKit is vendored in ../../Vendor/AssetKit under its MIT license. Its
+vendored LZFSE implementation is BSD-3-Clause. Both original license texts
+and exact public upstream revisions are retained with those sources.
+
+Reference archives described in provenance.json were inspected only to establish
+format facts. No compiled assets or AppIntents metadata from an application is
+used as generator input or distributed with these tools.
