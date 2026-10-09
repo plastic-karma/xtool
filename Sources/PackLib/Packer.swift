@@ -323,6 +323,9 @@ extension Plan.Product {
         case .application: """
         [
             .unsafeFlags([
+                // Swift Build's relocatable module link is represented by an archive.
+                // Extract runtime-dispatched members before normal dead stripping.
+                "-Xlinker", "-all_load",
                 "-Xlinker", "-rpath", "-Xlinker", "@executable_path/Frameworks",
             ]),
         ]

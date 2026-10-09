@@ -118,7 +118,11 @@ A compiler smoke using the installed SDK verified model initialization, relation
 
 Release verification checks the complete expected bundle and architecture inventory, Mach-O platform/deployment/SDK records, host-only load paths, code-page and signed-resource hashes, requested entitlements, signing certificates, CMS signatures, and strict universal-binary extents. Watch device bundles contain `arm64_32` and `arm64` slices, with the watchOS 26 deployment floor applied only to `arm64`. Allocation slack after a signature SuperBlob is distinct from forbidden bytes after the final universal slice; [Apple's parser](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_utilities/lib/superblob.h) bounds indexed signature data by the blob's own length.
 
-Both SwiftPM build backends retain archived extension code whose entry points are resolved by the system, and pass the selected SDK version to the Linux linker explicitly. The native signer supports executables without a `__text` section and refuses to insert a signature load command unless the entire command fits before the first file-backed section.
+Both SwiftPM build backends retain archived application and extension code whose entry points are resolved by the system. The SDK wrapper implements Swift Build's relocatable-object link (`-r`) as a static archive; both product wrappers therefore use `-all_load` to extract runtime-only members before normal `-dead_strip` processing. Public visibility and `N_NO_DEAD_STRIP` metadata cannot retain a member that was never extracted from its archive.
+
+For AppIntents, inspect the final application executable as well as its extensions: source-generated metadata JSON does not prove that callable implementations, type descriptors, and protocol-conformance records survived compilation and linking. In Swift 6.4, explicitly declare `AppIntent` alongside `LiveActivityIntent` rather than relying on the inherited protocol to propagate metadata retention.
+
+Both backends pass the selected SDK version to the Linux linker explicitly. The native signer supports executables without a `__text` section and refuses to insert a signature load command unless the entire command fits before the first file-backed section.
 
 A successful build and local verification do not prove device behavior or Apple acceptance. Exercise SwiftData persistence/migrations, Watch installation/sync, widgets, AppIntents and protected capabilities on devices. `--unsigned` specifically does not establish distribution signing or TestFlight readiness.
 
