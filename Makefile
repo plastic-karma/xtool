@@ -81,7 +81,7 @@ mac-clean:
 
 .PHONY: mac-dist
 # dist build for macOS
-# requires a few secrets in the env (see .github/workflows/release.yml)
+# requires signing env vars (see Documentation/Contributing/README.md)
 mac-dist:
 	@echo "bundle exec fastlane package"
 	@cd macOS && bundle exec fastlane package
