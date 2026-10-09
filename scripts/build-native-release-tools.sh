@@ -29,11 +29,12 @@ cmake --install "$build/signing"
 
 # Only versioned Python sources are runtime inputs; no app config, keys or caches.
 install -m 644 "$root"/Tools/Release/xtool_release/*.py "$prefix/libexec/xtool_release/"
+install -m 755 "$root/scripts/xtool-debug" "$prefix/bin/xtool-debug"
 swift build --package-path "$root" --product xtool -j "$jobs"
 xtool_bin=$(swift build --package-path "$root" --show-bin-path)
 install -m 755 "$xtool_bin/xtool" "$prefix/bin/xtool"
 shopt -s nullglob
-for resource in "$xtool_bin"/*.resources "$resources_bin"/*.resources; do
+for resource in "$xtool_bin"/*.resources "$xtool_bin"/*.bundle "$resources_bin"/*.resources "$resources_bin"/*.bundle; do
     cp -R "$resource" "$prefix/bin/"
 done
 # SwiftPM products can contain package-owned shared libraries (notably XADI).

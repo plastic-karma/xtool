@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Installed beside the native CLI; keep the debugger runtime outside application repos.
+set -euo pipefail
+prefix=${XTOOL_NATIVE_HOME:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}
+export PYTHONPATH="$prefix/libexec${PYTHONPATH:+:$PYTHONPATH}"
+exec "$prefix/venv/bin/python3" -m xtool_release.debug "$@"

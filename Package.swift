@@ -188,6 +188,7 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "XcodeGenKit", package: "XcodeGen", condition: .when(platforms: [.macOS])),
             ],
+            resources: [.copy("Resources/DebugToolset.json")],
             swiftSettings: swiftSettings,
         ),
         .executableTarget(

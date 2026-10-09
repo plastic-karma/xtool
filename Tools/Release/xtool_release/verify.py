@@ -190,7 +190,7 @@ def verify_directory(directory, bundle, executable, cpu, data, commands, slots, 
         return algorithm, code_count, hashlib.new(algorithm, directory).digest()
 
 
-def verify_code(bundle, executable, certificate, profile, expected_entitlements=None):
+def verify_code(bundle, executable, certificate, profile, expected_entitlements=None, *, development=False):
     evidence = []
     for cpu, subtype, data, commands in macho_slices(executable.read_bytes()):
         slots = signed_slots(data, commands)
@@ -199,7 +199,7 @@ def verify_code(bundle, executable, certificate, profile, expected_entitlements=
                     for directory in directories]
         entitlements = plistlib.loads(slots[5][8:])
         info = plistlib.loads((bundle / 'Info.plist').read_bytes())
-        validate_profile(profile, certificate.read_bytes(), info['CFBundleIdentifier'], entitlements)
+        validate_profile(profile, certificate.read_bytes(), info['CFBundleIdentifier'], entitlements, development=development)
         if expected_entitlements is not None:
             assert entitlements == expected_entitlements, 'Signed entitlements differ from requested entitlements'
         expected_digests = ['sha1', 'sha256'] if info['CFBundleSupportedPlatforms'] == ['WatchOS'] else ['sha256']
@@ -265,18 +265,19 @@ def verify_resources(bundle):
     return checked
 
 
-def verify(app, certificate, expected_entitlements=None):
+def verify(app, certificate, expected_entitlements=None, *, development=False):
     bundles = [app] + sorted(app.rglob('*.app')) + sorted(app.rglob('*.appex'))
     report = []
     verified_executables = set()
     for bundle in bundles:
         info = plistlib.loads((bundle / 'Info.plist').read_bytes())
         profile = decode_profile(bundle / 'embedded.mobileprovision')
-        validate_profile(profile, certificate.read_bytes(), info['CFBundleIdentifier'])
+        validate_profile(profile, certificate.read_bytes(), info['CFBundleIdentifier'], development=development)
         requested = None if expected_entitlements is None else expected_entitlements[info['CFBundleIdentifier']]
         report.append({'bundle': str(bundle.relative_to(app.parent)), 'identifier': info['CFBundleIdentifier'],
                        'version': info['CFBundleShortVersionString'], 'build': info['CFBundleVersion'],
-                       'slices': verify_code(bundle, bundle / info['CFBundleExecutable'], certificate, profile, requested),
+                       'slices': verify_code(bundle, bundle / info['CFBundleExecutable'], certificate, profile, requested,
+                                             development=development),
                        'sealedResources': verify_resources(bundle), 'profile': profile['UUID']})
         verified_executables.add(bundle / info['CFBundleExecutable'])
     verify_executable_inventory(app, verified_executables)
@@ -323,5 +324,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('app', type=Path)
     parser.add_argument('--certificate', type=Path, required=True)
+    parser.add_argument('--development', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(verify(args.app, args.certificate), indent=2))
+    print(json.dumps(verify(args.app, args.certificate, development=args.development), indent=2))

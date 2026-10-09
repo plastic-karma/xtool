@@ -1,4 +1,4 @@
-"""Resolve external distribution identities and least-privilege entitlements."""
+"""Resolve external identities and least-privilege signing entitlements."""
 from datetime import datetime, timezone
 import fnmatch
 import os
@@ -32,13 +32,16 @@ def allows(allowed, requested):
     return type(allowed) is type(requested) and allowed == requested
 
 
-def validate_profile(profile, certificate, bundle_id, entitlements=None):
+def validate_profile(profile, certificate, bundle_id, entitlements=None, *, development=False):
     expiry = profile.get('ExpirationDate')
     if not isinstance(expiry, datetime) or expiry.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
         raise ValueError(f'Expired or undated provisioning profile for {bundle_id}')
     if certificate not in profile.get('DeveloperCertificates', []):
         raise ValueError(f'Provisioning profile does not include signing certificate: {bundle_id}')
-    if 'ProvisionedDevices' in profile or profile.get('ProvisionsAllDevices'):
+    if development:
+        if not profile.get('ProvisionedDevices') or profile.get('ProvisionsAllDevices'):
+            raise ValueError(f'Development profile with registered devices required: {bundle_id}')
+    elif 'ProvisionedDevices' in profile or profile.get('ProvisionsAllDevices'):
         raise ValueError(f'App Store distribution profile required: {bundle_id}')
     allowed = profile.get('Entitlements', {})
     teams = profile.get('TeamIdentifier', [])
@@ -48,15 +51,15 @@ def validate_profile(profile, certificate, bundle_id, entitlements=None):
     application = prefixes[0] + '.' + bundle_id
     if not allows(allowed.get('application-identifier'), application):
         raise ValueError(f'Provisioning profile does not allow bundle: {bundle_id}')
-    if allowed.get('get-task-allow') is not False:
-        raise ValueError(f'Debug-enabled provisioning profile: {bundle_id}')
+    if allowed.get('get-task-allow') is not development:
+        raise ValueError(f'Provisioning profile debug entitlement does not match signing mode: {bundle_id}')
     if entitlements is not None:
         if entitlements.get('application-identifier') != application:
             raise ValueError(f'Incorrect signed application identifier: {bundle_id}')
         if entitlements.get('com.apple.developer.team-identifier') != teams[0]:
             raise ValueError(f'Incorrect signed team identifier: {bundle_id}')
-        if entitlements.get('get-task-allow') is not False:
-            raise ValueError(f'Debug-enabled signature: {bundle_id}')
+        if entitlements.get('get-task-allow') is not development:
+            raise ValueError(f'Signed debug entitlement does not match signing mode: {bundle_id}')
         for key, value in entitlements.items():
             if key not in allowed or not allows(allowed[key], value):
                 raise ValueError(f'Profile does not permit entitlement {key}: {bundle_id}')
@@ -78,11 +81,12 @@ def expand_entitlements(value, team, prefix, bundle_id):
     return value
 
 
-def load_signing(project, path=None):
+def load_signing(project, path=None, *, development=False):
     root = next(t for t in project['targets'] if t['name'] == project['rootTarget'])
     config_home = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+    suffix = '.development.yml' if development else '.yml'
     path = Path(path or os.environ.get('XTOOL_SIGNING_CONFIG') or
-                config_home / 'xtool/signing' / (root['bundleID'] + '.yml')).expanduser().resolve()
+                config_home / 'xtool/signing' / (root['bundleID'] + suffix)).expanduser().resolve()
     if not path.is_file():
         raise ValueError('External signing config required; use --signing or XTOOL_SIGNING_CONFIG')
     project_root = Path(project['root']).resolve()
@@ -123,16 +127,16 @@ def load_signing(project, path=None):
             raise ValueError(f'Missing provisioning profile for {bundle_id}')
         profile_path = external(profiles[bundle_id])
         profile = decode_profile(profile_path)
-        team, prefix = validate_profile(profile, certificate, bundle_id)
+        team, prefix = validate_profile(profile, certificate, bundle_id, development=development)
         requested = expand_entitlements(target['entitlements'], team, prefix, bundle_id)
         required = {'application-identifier': prefix + '.' + bundle_id,
-                    'com.apple.developer.team-identifier': team, 'get-task-allow': False}
+                    'com.apple.developer.team-identifier': team, 'get-task-allow': development}
         for key, value in required.items():
             if key in requested and requested[key] != value:
                 raise ValueError(f'Conflicting requested entitlement {key}: {bundle_id}')
             requested[key] = value
         if profile['Entitlements'].get('beta-reports-active') is True:
             requested.setdefault('beta-reports-active', True)
-        validate_profile(profile, certificate, bundle_id, requested)
+        validate_profile(profile, certificate, bundle_id, requested, development=development)
         targets[bundle_id] = {'profile': profile_path, 'entitlements': requested}
     return {'certificate': certificate_path, 'privateKey': key_path, 'targets': targets}

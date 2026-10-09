@@ -20,11 +20,19 @@ public struct BuildSettings: Sendable {
     public var sdkEnvironment: [Environment.Key: String?]
 
     private var configOptions: [String] {
-        return [
+        var options = [
             "--configuration", configuration.rawValue,
             "--build-system", buildSystem.pmName,
             "--package-path", packagePath,
         ]
+        #if os(Linux)
+        if configuration == .debug, buildSystem == .swiftPM {
+            // Native SwiftPM accepts the mode as a compiler flag. Swift Build
+            // instead needs a toolset so its output/dependency graph also uses WMO.
+            options += ["--disable-index-store", "-Xswiftc", "-whole-module-optimization"]
+        }
+        #endif
+        return options
     }
 
     private var resolvedBaseOptions: [String] {
@@ -71,6 +79,17 @@ public struct BuildSettings: Sendable {
             self.sdkOptions += [
                 "--toolset", "\(darwinSDK.bundle.path)/toolset-swb.json",
             ]
+            #if os(Linux)
+            if configuration == .debug {
+                // Swift 6.4 primary-file mode can miss cross-file @Model conformances.
+                // A toolset maps WMO to SWIFT_COMPILATION_MODE before Swift Build
+                // plans outputs, unlike -Xswiftc, which only changes the compiler.
+                // Debug retains -Onone, -g and DEBUG; this is not -Owholemodule.
+                let debugToolset = try Bundle.module.url(forResource: "DebugToolset", withExtension: "json")
+                    .orThrow(StringError("The bundled Debug Swift Build toolset is missing"))
+                self.sdkOptions += ["--toolset", debugToolset.path]
+            }
+            #endif
             self.sdkEnvironment.merge([
                 "XCODE_EXTRA_PLATFORM_FOLDERS": "\(darwinSDK.bundle.path)/Developer/Platforms",
                 // SWB looks for dsymutil in the PATH. Other stuff (lld, libtool) is handled by toolset-swb.json.
