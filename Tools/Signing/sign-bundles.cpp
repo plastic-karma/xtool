@@ -10,7 +10,12 @@
 // Use zsign's multi-profile traversal with a distinct requested entitlement
 // plist for each bundle. The stock CLI shares one -e file across all profiles.
 int main(int argc, char **argv) {
-    if (argc == 3 && strcmp(argv[1], "--adhoc") == 0) {
+    const bool development = argc > 1 && strcmp(argv[1], "--development") == 0;
+    if (development) {
+        --argc;
+        ++argv;
+    }
+    if (!development && argc == 3 && strcmp(argv[1], "--adhoc") == 0) {
         std::list<ZSignAsset> assets(1);
         if (!assets.front().Init(nullptr, nullptr, "", "", true, true, false)) {
             return 1;
@@ -19,7 +24,7 @@ int main(int argc, char **argv) {
         return bundle.SignFolder(&assets, argv[2], "", "", "", {}, {}, true, false, false, false) ? 0 : 1;
     }
     if (argc < 7 || (argc - 4) % 3 != 0) {
-        std::fprintf(stderr, "Usage: xtool-sign-bundles APP CERT.der KEY.pem PROFILE ENTITLEMENTS DIGESTS ...\n"
+        std::fprintf(stderr, "Usage: xtool-sign-bundles [--development] APP CERT.der KEY.pem PROFILE ENTITLEMENTS DIGESTS ...\n"
                              "       xtool-sign-bundles --adhoc APP\n");
         return 2;
     }
@@ -54,15 +59,15 @@ int main(int argc, char **argv) {
             return 2;
         }
         if (!asset.Init(cert.get(), key.get(), profile, entitlements, false, sha256Only, false)) {
-            std::fprintf(stderr, "Cannot initialize distribution identity\n");
+            std::fprintf(stderr, "Cannot initialize signing identity\n");
             return 1;
         }
         jvalue requested;
         if (!requested.read_plist(entitlements) ||
             requested["application-identifier"].as_string() != asset.m_strApplicationId ||
             requested["com.apple.developer.team-identifier"].as_string() != asset.m_strTeamId ||
-            requested["get-task-allow"].as_bool()) {
-            std::fprintf(stderr, "Distribution entitlements do not match the profile\n");
+            requested["get-task-allow"].as_bool() != development) {
+            std::fprintf(stderr, "Signing entitlements do not match the selected mode or profile\n");
             return 1;
         }
     }

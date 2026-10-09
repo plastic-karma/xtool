@@ -100,6 +100,117 @@ Authenticate `asc` separately using its protected credential store. Upload happe
 
 Manifest `settings` and `requiredEnvironment` are **public build configuration**. Their values may be embedded in the application or generated workspace. An OAuth client identifier can go there; an OAuth client secret, API private key, password, or access token cannot.
 
+## Local USB device debugging
+
+This loop was exercised on an unmodified iPhone15,4 running iOS 26.6.1: no jailbreak, Mac runner, CI, or cloud build. Keep distribution signing and TestFlight separate. Back up the app's data **before** replacing it. Updating the same bundle identifiers with the same signing team retained the tested app and App Group data, but this does not protect against future schema migrations. Standard CoreDevice exports do not fully expose the App Group root database; an ordinary app-container copy is not a complete backup. Never uninstall the app or revoke production identities to make debugging work.
+
+### Pair and prepare the phone
+
+On Arch, use the official `usbmuxd` package/service and `libimobiledevice` tools. The phone must be unlocked, trust this computer, and have Developer Mode enabled in Settings. Developer Mode was already enabled in the tested setup; this is not a bypass.
+
+```bash
+sudo pacman -S usbmuxd libimobiledevice
+sudo systemctl start usbmuxd.service
+# Retrigger the USB rules if the phone was already plugged in.
+sudo udevadm trigger --subsystem-match=usb --action=add --attr-match=idVendor=05ac
+sudo systemctl restart usbmuxd.service
+idevice_id -l
+# Set UDID locally to the selected device; do not commit it.
+idevicepair -u "$UDID" pair
+uv tool install --python 3.13 'pymobiledevice3==11.26.0'
+pymobiledevice3 mounter auto-mount --udid "$UDID"
+```
+
+Accept the trust prompt on the phone. `auto-mount` obtains/mounts the personalized Developer Disk Image. The developer commands below use rootless `--userspace` tunnels; do not run LLDB or the application build as root.
+
+### Build and install without changing distribution credentials
+
+Use an Apple Development certificate/key and development profiles for **every** embedded bundle, with the appropriate registered devices and `get-task-allow=true`. Preserve bundle IDs, signing team, App Groups, and requested capabilities. Store these files externally with the same `0700` directory / `0600` file permissions as distribution credentials. The separate default configuration is:
+
+```text
+${XDG_CONFIG_HOME:-$HOME/.config}/xtool/signing/<root-bundle-id>.development.yml
+```
+
+It uses the same `certificate`, `privateKey`, and per-bundle `profiles` mapping shown above. Check any `XTOOL_SIGNING_CONFIG` override before building; do not point development signing at the distribution file.
+
+```bash
+umask 077
+./scripts/build-release.sh --development --configuration debug \
+  --output .xtool/device-debug-releases
+# Set IPA to the resulting IPA in its build-number directory.
+pymobiledevice3 apps install --udid "$UDID" --developer "$IPA"
+```
+
+Use `--developer`: plain installation hung in the tested setup. This is a development-signed update, not an App Store IPA sideload. Signing mode and compiler configuration are independent: `--development` enables device debugging; `--configuration debug` selects SwiftPM optimization/debug assertions. Canonical project import still reads **Release** settings, not Xcode's Debug configuration. Linux Debug uses the bundled Swift Build toolset's whole-module compilation to avoid the pinned compiler's per-primary-file `@Model` conformance failure, while retaining `-Onone`, `-g`, and `DEBUG`. The complete embedded-product/architecture graph is still built.
+
+Defaults remain distribution signing and release configuration. Only a release-configuration, distribution-signed build can use `--upload`; a development IPA cannot go to TestFlight. Do not overlap release/build runs.
+
+### Launch, locate, and attach
+
+```bash
+# Set BUNDLE_ID to the application's root bundle identifier.
+pymobiledevice3 apps list --udid "$UDID" --type User
+pymobiledevice3 developer dvt launch --userspace --udid "$UDID" \
+  --no-kill-existing "$BUNDLE_ID"
+pymobiledevice3 developer dvt process-id-for-bundle-id \
+  --userspace --udid "$UDID" "$BUNDLE_ID"
+```
+
+Set `APP_PID` to the returned running PID (refresh it after every relaunch). From the app metadata, obtain the current installed bundle `Path` and append its `CFBundleExecutable` to form `REMOTE_EXECUTABLE`. Set `EXECUTABLE` to the matching local `Payload/<app>.app/<executable>` from the installed build, not another release.
+
+In a separate terminal, keep this server running:
+
+```bash
+pymobiledevice3 developer debugserver start-server --userspace \
+  --udid "$UDID" --local-port 62078 --host 127.0.0.1
+```
+
+Use the installed `native/bin/xtool-debug` helper, not only the server's printed target/connect hints. On iOS 26, direct LLDB `process connect` without attach hung because debugproxy answered `qfThreadInfo` with `OK`. The helper first sends `vAttach` for the PID, then transparently forwards LLDB's remote protocol.
+
+Provide a compatible **Swift LLDB** via `--lldb`. On the tested Arch host, Swift 6.4 LLDB needed isolated compatible Ubuntu and Python 3.12 libraries. Its opt-in `~/.local/share/swiftly/lldb-6.4.0` launcher is workstation-specific, not installed by xtool or a guaranteed path. Set `SWIFT_LLDB` to your working executable/launcher.
+
+### Match application and OS symbols
+
+Generate symbols while the matching build's object files are still available:
+
+```bash
+# Set DSYM to an ignored output such as .xtool/device-debug/app.app.dSYM.
+dsymutil -o "$DSYM" "$EXECUTABLE"
+llvm-dwarfdump --uuid "$EXECUTABLE"
+llvm-dwarfdump --uuid "$DSYM/Contents/Resources/DWARF/$(basename "$EXECUTABLE")"
+
+# Set CACHE to a private local directory for this exact device OS build.
+pymobiledevice3 developer fetch-symbols download \
+  --userspace --udid "$UDID" "$CACHE"
+ipsw dyld extract --all --output "$CACHE/Symbols" \
+  "$CACHE/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e"
+```
+
+The executable and dSYM UUIDs must match. Use `ipsw dyld extract` on Linux, **not** `ipsw dyld split` (macOS only). `--sysroot` takes the extracted device OS symbols, not the compiler SDK; the helper also sets the root module search mapping because sysroot alone was insufficient. `--sdk` takes the compiler's iPhoneOS SDK (26.5 in this loop), adds its Darwin SwiftShims import path, and explicitly selects its CoreFoundation module map. Without the latter, Linux's CoreFoundation module relocated Darwin precompiled-module references into the host toolchain, breaking app-local Swift expressions.
+
+```bash
+native="${XTOOL_NATIVE_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/xtool/native}"
+# Set IPHONEOS_SDK to your imported iPhoneOS26.5.sdk directory.
+"$native/bin/xtool-debug" "$EXECUTABLE" --pid "$APP_PID" \
+  --lldb "$SWIFT_LLDB" \
+  --symbols "$DSYM/Contents/Resources/DWARF/$(basename "$EXECUTABLE")" \
+  --remote-executable "$REMOTE_EXECUTABLE" \
+  --sysroot "$CACHE/Symbols" --sdk "$IPHONEOS_SDK"
+```
+
+`--symbols` requires the **raw DWARF file**, not the `.dSYM` directory. The helper also accepts repeatable `-o 'LLDB command'` options before connecting. In LLDB, set a source breakpoint with `breakpoint set --file YourSource.swift --line <line>`, inspect with `thread backtrace all`, and resume with `continue`; Ctrl-C interrupts a running process. Actual source breakpoint hits, source stepping, stop/resume, backtraces, detach, and Swift expression evaluation were demonstrated. In an unoptimized application frame, `self.isEnabled`, `self.isSyncing`, and `self.conflicts.count` returned live values. Select the relevant app frame; optimized builds can make local variables unavailable, and these checks do not establish unrestricted expression evaluation.
+
+End with `process detach`, then `quit`; stop the forwarding server afterward. Never uninstall to end the loop.
+
+For a still image on iOS 26:
+
+```bash
+pymobiledevice3 developer dvt screenshot --userspace --udid "$UDID" \
+  .xtool/device-debug/screen.png
+```
+
+Create that output directory with mode `0700` first. iOS 27-only display `serve-web` is not part of this iOS 26 procedure. Logs, screenshots, debugger output, and container backups can expose vault content and tokens: use ignored `.xtool/` storage, restrictive permissions (`umask 077`), and never upload these artifacts. Stock accessibility automation is not established by this loop: the tested optional navigation required an external pymobiledevice3 11.26.0 `perform_press` fix, with both `ObjectType='passthrough'` and `Value=element` inside `PlatformElementValue_v1`.
+
 ## Reuse boundaries
 
 Supported inputs include direct XcodeGen target specifications and Xcode project Release configurations with ordinary or synchronized source groups, system frameworks, and Swift package products. Unsupported project constructs fail explicitly: xcconfig indirection, XcodeGen includes/templates, custom build rules, non-embedded project dependencies, unsupported per-file settings, or non-Swift application sources. Expand such configuration or extend the importer rather than dropping a target.
@@ -123,6 +234,8 @@ Both SwiftPM build backends retain archived application and extension code whose
 For AppIntents, inspect the final application executable as well as its extensions: source-generated metadata JSON does not prove that callable implementations, type descriptors, and protocol-conformance records survived compilation and linking. In Swift 6.4, explicitly declare `AppIntent` alongside `LiveActivityIntent` rather than relying on the inherited protocol to propagate metadata retention.
 
 Both backends pass the selected SDK version to the Linux linker explicitly. The native signer supports executables without a `__text` section and refuses to insert a signature load command unless the entire command fits before the first file-backed section.
+
+Debug universal Watch packaging removes build-host `LC_RPATH` entries per architecture when the slices have different path sets, retains device/system/relative paths, and recombines the slices before signing.
 
 A successful build and local verification do not prove device behavior or Apple acceptance. Exercise SwiftData persistence/migrations, Watch installation/sync, widgets, AppIntents and protected capabilities on devices. `--unsigned` specifically does not establish distribution signing or TestFlight readiness.
 

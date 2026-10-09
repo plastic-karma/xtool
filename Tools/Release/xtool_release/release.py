@@ -151,16 +151,39 @@ def prepare_bundle(bundle, target, sdk, native, generated, install_name_tool):
     info.update(sdk_metadata(sdk, target))
     (bundle / 'Info.plist').write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
     executable = bundle / info['CFBundleExecutable']
-    host_paths = set()
-    for _, _, _, commands in macho_slices(executable.read_bytes()):
+    slices = macho_slices(executable.read_bytes())
+    slice_paths = []
+    for _, _, _, commands in slices:
+        host_paths = set()
         for kind, body in commands:
             if kind == 0x8000001c:
                 offset = struct.unpack_from('<I', body, 8)[0]
                 value = body[offset:].split(b'\0', 1)[0].decode()
-                if value.startswith('/') and not value.startswith(('/usr/lib/', '/System/Library/')):
+                if (value.startswith('/') and value not in ('/usr/lib', '/System/Library')
+                        and not value.startswith(('/usr/lib/', '/System/Library/'))):
                     host_paths.add(value)
-    for path in sorted(host_paths):
-        run([install_name_tool, '-delete_rpath', path, executable])
+        slice_paths.append(host_paths)
+    host_paths = set().union(*slice_paths)
+    if all(paths == slice_paths[0] for paths in slice_paths):
+        for path in sorted(host_paths):
+            run([install_name_tool, '-delete_rpath', path, executable])
+    else:
+        # LLVM requires every deleted rpath to exist in every input slice.
+        # Keep each slice's runtime paths intact rather than rewriting their union.
+        toolset = json.loads((sdk / 'toolset.json').read_text())
+        lipo = sdk / toolset.get('rootPath', 'toolset/bin') / 'llvm-lipo'
+        with tempfile.TemporaryDirectory(prefix='xtool-release-rpaths-', dir=bundle) as temporary:
+            thin_files = []
+            for index, ((_, _, data, _), paths) in enumerate(zip(slices, slice_paths)):
+                thin = Path(temporary) / str(index)
+                thin.write_bytes(data)
+                for path in sorted(paths):
+                    run([install_name_tool, '-delete_rpath', path, thin])
+                thin_files.append(thin)
+            combined = Path(temporary) / 'combined'
+            run([lipo, '-create', *thin_files, '-output', combined])
+            shutil.copymode(executable, combined)
+            combined.replace(executable)
     return len(host_paths)
 
 
@@ -187,7 +210,8 @@ def check_platforms(app, project, paths, sdk):
                 if kind in (0xc, 0x80000018, 0x8000001c, 0x8000001f):
                     start = struct.unpack_from('<I', body, 8)[0]
                     value = body[start:].split(b'\0', 1)[0].decode()
-                    if value.startswith('/') and not value.startswith(('/System/Library/', '/usr/lib/')):
+                    if (value.startswith('/') and value not in ('/usr/lib', '/System/Library')
+                            and not value.startswith(('/System/Library/', '/usr/lib/'))):
                         raise ValueError(f'Host load path in {target["name"]}')
                     if 'SwiftUICore.framework' in value:
                         raise ValueError(f'Private framework linkage in {target["name"]}')
@@ -251,17 +275,23 @@ def assemble(project, unsigned_app, destination, sdk, native, signing, args):
             # Only generated entitlement plists are temporary; keys/configs are
             # never copied into either scratch build trees or public artifacts.
             with tempfile.TemporaryDirectory(prefix='xtool-release-signing-') as private:
-                command = [signer, app, signing['certificate'], signing['privateKey']]
+                command = [signer]
+                if args.development:
+                    command += ['--development']
+                command += [app, signing['certificate'], signing['privateKey']]
                 for index, target in enumerate(project['targets']):
                     identity = signing['targets'][target['bundleID']]
                     entitlements = Path(private) / f'{index}.plist'
                     entitlements.write_bytes(plistlib.dumps(identity['entitlements']))
                     command += [identity['profile'], entitlements, 'sha1,sha256' if target['platform'] == 'watchos' else 'sha256']
                 run(command, private=True)
-            evidence = verify(app, signing['certificate'], {key: value['entitlements'] for key, value in signing['targets'].items()})
+            evidence = verify(app, signing['certificate'],
+                              {key: value['entitlements'] for key, value in signing['targets'].items()},
+                              development=args.development)
         check_inventory(app, project, paths)
         check_platforms(app, project, paths, sdk)
-        verification = {'signing': 'adhoc' if signing is None else 'distribution', 'bundles': evidence,
+        mode = 'adhoc' if signing is None else ('development' if args.development else 'distribution')
+        verification = {'signing': mode, 'bundles': evidence,
                         'platforms': platform_evidence, 'removedHostRpathCounts': removed}
         (staging / 'verification.json').write_text(json.dumps(verification, indent=2) + '\n')
         ipa = staging / (root['module'] + '.ipa')
@@ -278,7 +308,7 @@ def assemble(project, unsigned_app, destination, sdk, native, signing, args):
         info = plistlib.loads((app / 'Info.plist').read_bytes())
         record = {'version': info['CFBundleShortVersionString'], 'build': str(project['buildNumber']),
                   'ipa': str(destination / ipa.name), 'sha256': hashlib.sha256(ipa.read_bytes()).hexdigest(),
-                  'signing': verification['signing'], 'bundles': len(evidence),
+                  'signing': verification['signing'], 'configuration': args.configuration, 'bundles': len(evidence),
                   'architectures': {e['identifier']: e['architectures'] for e in platform_evidence}}
         (staging / 'release.json').write_text(json.dumps(record, indent=2) + '\n')
         staging.rename(destination)
@@ -293,6 +323,10 @@ def main(argv=None):
     parser.add_argument('--signing', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--unsigned', action='store_true', help='Produce an ad-hoc artifact; not installable through TestFlight')
+    parser.add_argument('--development', action='store_true',
+                        help='Sign for registered devices with debugger access; never uploads')
+    parser.add_argument('--configuration', choices=('debug', 'release'), default='release',
+                        help='Swift build configuration (default: release)')
     parser.add_argument('--upload', action='store_true')
     parser.add_argument('--toolchain', type=Path, help='Explicit Swift toolchain root or bin directory')
     parser.add_argument('--xtool', default=os.environ.get('XTOOL', 'xtool'))
@@ -302,8 +336,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.build_number.isdecimal():
         parser.error('--build-number must contain decimal digits only')
-    if args.unsigned and (args.upload or args.signing):
-        parser.error('--unsigned cannot be combined with --upload or --signing')
+    if args.unsigned and (args.upload or args.signing or args.development):
+        parser.error('--unsigned cannot be combined with --upload, --signing, or --development')
+    if args.upload and (args.development or args.configuration != 'release'):
+        parser.error('--upload requires a distribution-signed release configuration')
     from .project import load_project
     from .workspace import discover_sdk, prepare_workspace
     project = load_project(args.config.resolve(), args.build_number)
@@ -315,12 +351,12 @@ def main(argv=None):
     destination = (args.output or Path(project['root']) / '.xtool/releases').resolve() / args.build_number
     if destination.exists():
         raise FileExistsError(f'Release already exists: {destination}')
-    signing = None if args.unsigned else load_signing(project, args.signing)
+    signing = None if args.unsigned else load_signing(project, args.signing, development=args.development)
     if args.upload and not project['release'].get('appStoreConnect', {}).get('appID'):
         raise ValueError('--upload requires appStoreConnect.appID')
     sdk = discover_sdk()
     environment = compiler_environment(project, args.toolchain)
-    run([args.xtool, 'dev', 'build', '--configuration', 'release'], cwd=wrapper, env=environment)
+    run([args.xtool, 'dev', 'build', '--configuration', args.configuration], cwd=wrapper, env=environment)
     root = next(t for t in project['targets'] if t['name'] == project['rootTarget'])
     record = assemble(project, wrapper / 'xtool' / (root['module'] + '.app'), destination, sdk, native_home(), signing, args)
     if args.upload:
